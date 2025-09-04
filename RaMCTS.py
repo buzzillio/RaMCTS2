@@ -887,6 +887,7 @@ import json
 import os
 from datetime import datetime
 import matplotlib.pyplot as plt
+import argparse
 
 # Create output directory
 OUTPUT_DIR = "ramcts_results_fixed"
@@ -1615,75 +1616,108 @@ def plot_efficiency_radar(all_results: Dict[str, Dict[str, Dict[str, Any]]],
 # Main Execution
 # ====================
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run RaMCTS experiments")
+    parser.add_argument("--runs", type=int, default=1, help="number of experiment repetitions")
+    args = parser.parse_args()
+
     print("\nStarting Fixed Experiments...")
     print("=" * 60)
-    
+
     results_file = open(f"{OUTPUT_DIR}/results_fixed.txt", 'w')
-    
+
     def log(text):
         print(text)
         results_file.write(text + '\n')
         results_file.flush()
-    
-    all_results: Dict[str, Dict[str, Any]] = {}
-    
-    for map_name in ["4x4", "8x8"]:
-        log(f"\nTesting on FrozenLake {map_name}")
+
+    all_runs: List[Dict[str, Dict[str, Any]]] = []
+
+    for run_idx in range(1, args.runs + 1):
+        log(f"\n=== Run {run_idx}/{args.runs} ===")
+        all_results: Dict[str, Dict[str, Any]] = {}
+
+        for map_name in ["4x4", "8x8"]:
+            log(f"\nTesting on FrozenLake {map_name}")
+            log("=" * 60)
+
+            all_results[map_name] = {}
+
+            # 1. Q-Learning
+            log("\n1. Q-Learning (Fixed)")
+            results = run_qlearning_experiment(map_name, max_episodes=10000 if map_name == "4x4" else 30000)
+            all_results[map_name]['Q-Learning'] = results
+
+            budget = 150 if map_name == "4x4" else 300
+
+            # Ablations: heuristic-free only
+            ablations = [
+                ("Vanilla", "Vanilla"),
+                ("RaMCTS", "RaMCTS"),
+            ]
+
+            for method, label in ablations:
+                log(f"\n{label} ({budget} sims)")
+                results = run_experiment(map_name, method, budget, max_episodes=1000)
+                all_results[map_name][label] = results
+
+        # Summary for this run
+        log("\n" + "=" * 60)
+        log(f"RESULTS SUMMARY (Run {run_idx})")
         log("=" * 60)
-        
-        all_results[map_name] = {}
-        
-        # 1. Q-Learning
-        log("\n1. Q-Learning (Fixed)")
-        results = run_qlearning_experiment(map_name, max_episodes=10000 if map_name == "4x4" else 30000)
-        all_results[map_name]['Q-Learning'] = results
-        
-        budget = 150 if map_name == "4x4" else 300
 
-        # Ablations: heuristic-free only
-        ablations = [
-            ("Vanilla", "Vanilla"),
-            ("RaMCTS", "RaMCTS"),
-        ]
+        for map_name in ["4x4", "8x8"]:
+            log(f"\nFrozenLake {map_name}:")
+            keys = {
+                "Q-Learning": "Q-Learning",
+                "Vanilla": "Vanilla",
+                "RaMCTS": "RaMCTS",
+            }
+            for key, label in keys.items():
+                res = all_results[map_name].get(key)
+                if res is None:
+                    log(f"  {label}: (missing)")
+                    continue
+                status = f"SOLVED in {res['solve_episode']} episodes" if res['solved'] else "Failed"
+                log(f"  {label}: {status}")
 
-        for method, label in ablations:
-            log(f"\n{label} ({budget} sims)")
-            results = run_experiment(map_name, method, budget, max_episodes=1000)
-            all_results[map_name][label] = results
-    
-    # Summary (heuristic-free)
+        all_runs.append(all_results)
+
+    # Averaged summary across runs
     log("\n" + "=" * 60)
-    log("RESULTS SUMMARY")
+    log(f"AVERAGED RESULTS OVER {args.runs} RUNS")
     log("=" * 60)
+
+    keys = {
+        "Q-Learning": "Q-Learning",
+        "Vanilla": "Vanilla",
+        "RaMCTS": "RaMCTS",
+    }
 
     for map_name in ["4x4", "8x8"]:
         log(f"\nFrozenLake {map_name}:")
-        keys = {
-            "Q-Learning": "Q-Learning",
-            "Vanilla": "Vanilla",
-            "RaMCTS": "RaMCTS",
-        }
         for key, label in keys.items():
-            res = all_results[map_name].get(key)
-            if res is None:
-                log(f"  {label}: (missing)")
-                continue
-            status = f"SOLVED in {res['solve_episode']} episodes" if res['solved'] else "Failed"
-            log(f"  {label}: {status}")
-    
+            solved_runs = [run[map_name][key]['solved'] for run in all_runs]
+            solve_episodes = [run[map_name][key]['solve_episode'] for run in all_runs if run[map_name][key]['solved']]
+            solve_rate = float(np.mean(solved_runs)) if solved_runs else 0.0
+            avg_ep = float(np.mean(solve_episodes)) if solve_episodes else float('nan')
+            if np.isnan(avg_ep):
+                log(f"  {label}: solved {solve_rate*100:.1f}% runs, avg solve episode: N/A")
+            else:
+                log(f"  {label}: solved {solve_rate*100:.1f}% runs, avg solve episode: {avg_ep:.1f}")
+
     results_file.close()
     print(f"\nResults saved to {OUTPUT_DIR}/results_fixed.txt")
     print("\n✅ Heuristic-free ablations complete.")
 
-    # ---- Plots (based on fresh run data) ----
+    # ---- Plots (based on last run data) ----
     sims_map = {"4x4": 150, "8x8": 300}  # keep in sync with 'budget' above
     plot_learning_dynamics(OUTPUT_DIR, ql_scale=10.0, x_cutoff_4x4=30, x_cutoff_8x8=170)
     plot_episodes_to_solve_bar(
-        all_results,
+        all_runs[-1],
         OUTPUT_DIR,
         caps={"Q-Learning": {"4x4": 10000, "8x8": 30000},
               "Vanilla": {"4x4": 1000, "8x8": 1000},
               "RaMCTS": {"4x4": 1000, "8x8": 1000}},
         include_strong=False  # set True only if you actually ran "_strong" variants
     )
-    plot_efficiency_radar(all_results, OUTPUT_DIR, sims_per_move=sims_map)
+    plot_efficiency_radar(all_runs[-1], OUTPUT_DIR, sims_per_move=sims_map)
