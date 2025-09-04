@@ -122,6 +122,9 @@ class MCTSConfig:
     warm_sims: int = 10
     rollout_max_steps: int = 100
     gamma: float = 1.0  # discount for cumulative rewards (1.0 = undiscounted)
+    root_exploration_fraction: float = 0.0
+    pb_c_base: float = 1.0
+    pb_c_init: float = 1.25
 
 class MCTSSolver:
     def __init__(self, model: Any, action_count: int, config: Optional[MCTSConfig] = None):
