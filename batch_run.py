@@ -39,31 +39,41 @@ from tqdm import tqdm
 # ----------------------------
 ENVS = ["Taxi-v3", "CliffWalking-v1", "FrozenLake-v1"]
 
-EPISODES = 400
-MAX_STEPS = 200
-GAMMA = 0.99
+# General episode/step settings
+MAX_STEPS = 100
+GAMMA = 0.95
 
-# Q-Learning
+# Q-Learning configuration
+QL_EPISODES = 10000
 QL_ALPHA = 0.8
 QL_EPS_START = 1.0
-QL_EPS_END = 0.05
-QL_EPS_DECAY_FRAC = 0.7
+QL_EPS_MIN = 0.01
+QL_EPS_DECAY = 0.9995
 
-# MCTS constants
-MCTS_C = 1.4
-MCTS_BUDGET = 64
-ROLLOUT_DEPTH = 18
+# Vanilla MCTS configuration
+MCTS_EPISODES = 1000
+MCTS_C = math.sqrt(2)
+MCTS_BUDGET = 100
+ROLLOUT_DEPTH = 50
 
-# RaMCTS constants
-RAMCTS_C = 1.2
-RAMCTS_BUDGET = 96
+# RaMCTS configuration
+RAMCTS_EPISODES = 1000
+RAMCTS_C = math.sqrt(2)
+RAMCTS_BUDGET = 100
 RAMCTS_RAVE_BETA = 0.5
 
 # Per-environment tuning
 ENV_TUNING = {
-    "Taxi-v3":         dict(mcts_budget=32,  ramcts_budget=48,  rollout=12),
-    "CliffWalking-v1": dict(mcts_budget=64,  ramcts_budget=96,  rollout=16),
-    "FrozenLake-v1":   dict(mcts_budget=64,  ramcts_budget=96,  rollout=16),
+    "Taxi-v3":         dict(mcts_budget=100, ramcts_budget=100, rollout=50),
+    "CliffWalking-v1": dict(mcts_budget=100, ramcts_budget=100, rollout=50),
+    "FrozenLake-v1":   dict(mcts_budget=100, ramcts_budget=100, rollout=50),
+}
+
+# Mapping for episodes per algorithm
+ALGO_EPISODES = {
+    "Q-Learning": QL_EPISODES,
+    "Vanilla MCTS": MCTS_EPISODES,
+    "RaMCTS": RAMCTS_EPISODES,
 }
 
 
@@ -201,7 +211,6 @@ def q_learning_run(env_id: str, seed: int, progress=None):
     Q = np.zeros((nS, nA), dtype=np.float32)
 
     eps = QL_EPS_START
-    eps_decay = (QL_EPS_START - QL_EPS_END) / max(1, int(EPISODES * QL_EPS_DECAY_FRAC))
 
     rewards = []
     ep_lens = []
@@ -211,7 +220,7 @@ def q_learning_run(env_id: str, seed: int, progress=None):
     window = 100
     solved_at = None
 
-    for ep in range(EPISODES):
+    for ep in range(QL_EPISODES):
         if progress is not None:
             progress(ep)
 
@@ -248,8 +257,7 @@ def q_learning_run(env_id: str, seed: int, progress=None):
         if len(success) >= window and np.mean(success[-window:]) >= early_thresh:
             solved_at = ep + 1
 
-        if ep < int(EPISODES * QL_EPS_DECAY_FRAC):
-            eps = max(QL_EPS_END, eps - eps_decay)
+        eps = max(QL_EPS_MIN, eps * QL_EPS_DECAY)
 
     env.close()
     return rewards, ep_lens, success
@@ -476,7 +484,7 @@ def mcts_run(env_id: str, seed: int, progress=None):
     window = 100
     solved_at = None
 
-    for ep in range(EPISODES):
+    for ep in range(MCTS_EPISODES):
         if progress is not None:
             progress(ep)
 
@@ -514,7 +522,7 @@ def ramcts_run(env_id: str, seed: int, progress=None):
     window = 100
     solved_at = None
 
-    for ep in range(EPISODES):
+    for ep in range(RAMCTS_EPISODES):
         if progress is not None:
             progress(ep)
 
@@ -561,16 +569,18 @@ def try_project_trainer(algo_name: str):
                       ("ramcts_trainer", "train_one_run"),
                       ("algorithms.ramcts", "train_one_run")]
 
+    episodes = ALGO_EPISODES.get(algo_name, 0)
+
     for mod, fn in candidates:
         try:
             m = importlib.import_module(mod)
             f = getattr(m, fn, None)
             if callable(f):
-                def wrapper(env_id: str, seed: int, progress=None, _f=f):
+                def wrapper(env_id: str, seed: int, progress=None, _f=f, _episodes=episodes):
                     try:
-                        out = _f(env_id=env_id, seed=seed, episodes=EPISODES, max_steps=MAX_STEPS, gamma=GAMMA, progress=progress)
+                        out = _f(env_id=env_id, seed=seed, episodes=_episodes, max_steps=MAX_STEPS, gamma=GAMMA, progress=progress)
                     except TypeError:
-                        out = _f(env_id=env_id, seed=seed, episodes=EPISODES, max_steps=MAX_STEPS, gamma=GAMMA)
+                        out = _f(env_id=env_id, seed=seed, episodes=_episodes, max_steps=MAX_STEPS, gamma=GAMMA)
                     if isinstance(out, tuple) and len(out) >= 2:
                         rewards, lens = out[:2]
                         succ = out[2] if len(out) >= 3 else None
@@ -592,8 +602,12 @@ def try_project_trainer(algo_name: str):
 # ----------------------------
 def _fallback_make_env_figures(env_id: str, env_results: Dict[str, Any], output_dir: str):
     """Fallback if plotting_utils.make_env_figures is missing."""
-    episodes = int(env_results.get("episodes", 0))
     algos = env_results.get("algorithms", {})
+    episodes = 0
+    for data in algos.values():
+        rr = data.get("rewards_runs", [])
+        if rr:
+            episodes = max(episodes, len(rr[0]))
 
     # Build success matrices, episodes-to-solve, etc.
     def _rolling(x, w):
@@ -787,9 +801,9 @@ def main():
 
     # Algorithms
     algos = [
-        ("Q-Learning", q_learning_run, None),
-        ("Vanilla MCTS", mcts_run, MCTS_BUDGET),
-        ("RaMCTS", ramcts_run, RAMCTS_BUDGET),
+        ("Q-Learning", q_learning_run, QL_EPISODES, None),
+        ("Vanilla MCTS", mcts_run, MCTS_EPISODES, MCTS_BUDGET),
+        ("RaMCTS", ramcts_run, RAMCTS_EPISODES, RAMCTS_BUDGET),
     ]
 
     total_tasks = len(ENVS) * len(algos) * runs
@@ -798,9 +812,9 @@ def main():
     index = []
 
     for env_id in ENVS:
-        env_results: Dict[str, Any] = {"episodes": EPISODES, "runs": runs, "algorithms": {}}
+        env_results: Dict[str, Any] = {"runs": runs, "algorithms": {}}
 
-        for algo_name, algo_fn, budget in algos:
+        for algo_name, algo_fn, algo_episodes, budget in algos:
             rewards_runs, lens_runs, succ_runs = [], [], []
             out_dir = out_root / env_id / algo_name.replace(" ", "")
             ensure_dir(out_dir)
@@ -808,7 +822,7 @@ def main():
             for run_idx in range(runs):
                 seed = 1000 + 37 * run_idx
                 desc = f"{env_id} | {algo_name} | run {run_idx+1}/{runs}"
-                pbar = tqdm(total=EPISODES, desc=desc, leave=False, position=1)
+                pbar = tqdm(total=algo_episodes, desc=desc, leave=False, position=1)
 
                 def _progress(_=None):
                     pbar.update(1)
@@ -818,12 +832,12 @@ def main():
                 except TypeError:
                     rewards, lens, succ = algo_fn(env_id, seed)
                 except Exception as e:
-                    if pbar.n < EPISODES: pbar.update(EPISODES - pbar.n)
+                    if pbar.n < algo_episodes: pbar.update(algo_episodes - pbar.n)
                     pbar.close()
                     print(f"[ERROR] {env_id} {algo_name} run {run_idx} failed: {e}", file=sys.stderr)
                     raise
                 finally:
-                    if pbar.n < EPISODES: pbar.update(EPISODES - pbar.n)
+                    if pbar.n < algo_episodes: pbar.update(algo_episodes - pbar.n)
                     pbar.close()
 
                 rewards_runs.append(list(map(float, rewards)))
@@ -853,6 +867,7 @@ def main():
                 "rewards_runs": rewards_runs,
                 "lens_runs": lens_runs,
                 "success_runs": succ_runs,
+                "episodes": algo_episodes,
                 **({"budget": budget} if budget is not None else {}),
             }
 
