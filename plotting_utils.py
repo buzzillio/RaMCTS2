@@ -102,7 +102,7 @@ def plot_learning_dynamics(output_dir: str,
                 mask = ep_v <= cutoffs[map_name]
                 ax.plot(ep_v[mask], sr_v[mask], linewidth=3, label="Vanilla MCTS")
             except FileNotFoundError:
-                print(f"[plot] missing logs: Vanilla {map_name}")
+                print(f"[plot] missing logs: Vanilla MCTS {map_name}")
 
         ax.set_title(titles[map_name], fontsize=13, pad=10)
         ax.set_xlabel("Episodes")
