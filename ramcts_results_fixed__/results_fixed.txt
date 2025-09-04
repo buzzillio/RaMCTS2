@@ -1,0 +1,48 @@
+
+=== Run 1/1 ===
+
+Testing on FrozenLake 4x4
+============================================================
+
+1. Q-Learning (Fixed)
+
+Vanilla (150 sims)
+
+RaMCTS (150 sims)
+
+Testing on FrozenLake 8x8
+============================================================
+
+1. Q-Learning (Fixed)
+
+Vanilla (300 sims)
+
+RaMCTS (300 sims)
+
+============================================================
+RESULTS SUMMARY (Run 1)
+============================================================
+
+FrozenLake 4x4:
+  Q-Learning: SOLVED in 1908 episodes
+  Vanilla: Failed
+  RaMCTS: SOLVED in 14 episodes
+
+FrozenLake 8x8:
+  Q-Learning: Failed
+  Vanilla: Failed
+  RaMCTS: SOLVED in 20 episodes
+
+============================================================
+AVERAGED RESULTS OVER 1 RUNS
+============================================================
+
+FrozenLake 4x4:
+  Q-Learning: solved 100.0% runs, avg solve episode: 1908.0
+  Vanilla: solved 0.0% runs, avg solve episode: N/A
+  RaMCTS: solved 100.0% runs, avg solve episode: 14.0
+
+FrozenLake 8x8:
+  Q-Learning: solved 0.0% runs, avg solve episode: N/A
+  Vanilla: solved 0.0% runs, avg solve episode: N/A
+  RaMCTS: solved 100.0% runs, avg solve episode: 20.0

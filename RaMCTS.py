@@ -913,10 +913,10 @@ FROZENLAKE_Q_EPISODES = {"4x4": 10000, "8x8": 30000}
 # Generic Gym environments
 GENERIC_ENVS = ["Taxi-v3", "CliffWalking-v1"]
 GENERIC_MCTS_BUDGET = {"Taxi-v3": 200, "CliffWalking-v1": 200}
-GENERIC_EPISODES = {"Taxi-v3": 1000, "CliffWalking-v1": 2000}
-GENERIC_ROLLOUT = {"Taxi-v3": 100, "CliffWalking-v1": 80}
-GENERIC_EP_STEPS = {"Taxi-v3": 200, "CliffWalking-v1": 100}
-GENERIC_Q_EPISODES = {"Taxi-v3": 10000, "CliffWalking-v1": 10000}
+GENERIC_EPISODES = {"Taxi-v3": 1000, "CliffWalking-v1": 500}
+GENERIC_ROLLOUT = {"Taxi-v3": 100, "CliffWalking-v1": 120}
+GENERIC_EP_STEPS = {"Taxi-v3": 200, "CliffWalking-v1": 200}
+GENERIC_Q_EPISODES = {"Taxi-v3": 10000, "CliffWalking-v1": 2000}
 
 # ====================
 # FrozenLake Model (FIXED)
@@ -1109,6 +1109,12 @@ class MCTSConfig:
     mini_duel: bool = False
     duel_extra_sims: int = 0
     rollout_max_steps: int = 50
+    # Additional options to support CliffWalking vanilla tuning
+    discount: float = 1.0  # 0.99 for CliffWalking vanilla
+    root_exploration_fraction: float = 0.0  # 0.25 for CliffWalking vanilla
+    pb_c_base: float = 0.0  # 19652 for CliffWalking vanilla (MuZero-style)
+    pb_c_init: float = 0.0  # 1.25 for CliffWalking vanilla
+    full_episode_rollout: bool = False  # True for CliffWalking vanilla
 
 class MCTSSolver:
     """Fixed MCTS solver (heuristic-free)."""
@@ -1132,13 +1138,25 @@ class MCTSSolver:
             return self.config.beta_max * progress
             
     def _simulate_rollout(self, state: int) -> float:
-        """Heuristic-free random rollout."""
-        for _ in range(self.config.rollout_max_steps):
-            action = random.randrange(self.action_count)
-            state, reward, done = self.model.step(state, action)
-            if done:
-                return reward
-        return 0.0
+        """Random rollout. Optionally accumulate discounted return until terminal/cap."""
+        if self.config.full_episode_rollout:
+            total = 0.0
+            g = 1.0
+            for _ in range(self.config.rollout_max_steps):
+                action = random.randrange(self.action_count)
+                state, reward, done = self.model.step(state, action)
+                total += g * reward
+                g *= self.config.discount if self.config.discount > 0 else 1.0
+                if done:
+                    break
+            return total
+        else:
+            for _ in range(self.config.rollout_max_steps):
+                action = random.randrange(self.action_count)
+                state, reward, done = self.model.step(state, action)
+                if done:
+                    return reward
+            return 0.0
     
     def _select_action(self, node: Node, miner: Optional[RaCTSMiner], 
                        beta: float, history: List[Tuple[int, int]], 
@@ -1148,7 +1166,10 @@ class MCTSSolver:
             # No children yet; pick a random action (no heuristic fallback)
             return random.randrange(self.action_count)
 
+        # Use miner-driven PUCT if miner available and warmed up
         use_puct = (miner and beta > 0 and sim_count >= self.config.warm_sims and node.N >= 10)
+        # Use MuZero-style PUCT even without miner if pb_c_base/init configured (>0)
+        use_vanilla_puct = (not miner) and (self.config.pb_c_base > 0 and self.config.pb_c_init > 0) and (node.N >= 1)
 
         if use_puct:
             # PUCT selection (using priors from the miner)
@@ -1169,6 +1190,23 @@ class MCTSSolver:
                 prior = priors.get(action, 1.0 / self.action_count)
                 exploration = self.config.c_puct * beta * prior * sqrt_n / (1 + child.N)
                 value = q + exploration
+                if value > best_value:
+                    best_value = value
+                    best_action = action
+            return best_action
+        elif use_vanilla_puct:
+            # MuZero-style PUCT with uniform priors (no miner)
+            best_action = None
+            best_value = -float('inf')
+            sqrt_n = math.sqrt(max(1, node.N))
+            # Uniform priors over available children
+            prior = 1.0 / max(1, len(node.children))
+            # Compute pb_c term once per node visit count
+            pb_c = math.log((node.N + self.config.pb_c_base + 1) / self.config.pb_c_base) + self.config.pb_c_init
+            for action, child in node.children.items():
+                q = child.q_value()
+                u = pb_c * prior * sqrt_n / (1 + child.N)
+                value = q + u
                 if value > best_value:
                     best_value = value
                     best_action = action
@@ -1234,6 +1272,9 @@ class MCTSSolver:
             self._backup(path, reward)
         if not root.children:
             return random.randrange(self.action_count)
+        # Optional root-level exploration for CliffWalking vanilla
+        if self.config.root_exploration_fraction > 0.0 and random.random() < self.config.root_exploration_fraction:
+            return random.choice(list(root.children.keys()))
         return max(root.children, key=lambda a: root.children[a].N)
 
 # ====================
@@ -1360,6 +1401,15 @@ def run_generic_experiment(env_id: str,
         warm_sims=10,
         rollout_max_steps=rollout_max_steps,
     )
+    # Apply CliffWalking-specific vanilla MCTS settings
+    if env_id == "CliffWalking-v1" and method == "Vanilla":
+        mcts_config.max_sims_per_move = 2000  # num_simulations
+        mcts_config.discount = 0.99
+        mcts_config.root_exploration_fraction = 0.25
+        mcts_config.pb_c_base = 19652
+        mcts_config.pb_c_init = 1.25
+        mcts_config.full_episode_rollout = True
+        mcts_config.rollout_max_steps = step_cap  # allow full-episode rollout up to cap
     solver = MCTSSolver(model, mcts_config)
     miner = NGramMiner() if method == "RaMCTS" else None
 
@@ -1960,10 +2010,13 @@ if __name__ == "__main__":
             all_results[env_id]['Q-Learning'] = res
             budget = GENERIC_MCTS_BUDGET[env_id]
             for method in ["Vanilla", "RaMCTS"]:
-                log(f"\n{method} ({budget} sims)")
+                display_budget = 2000 if method == "Vanilla" else budget
+                log(f"\n{method} ({display_budget} sims)")
+                # Override episodes for CliffWalking Vanilla per request
+                episodes = 5000 if method == "Vanilla" else GENERIC_EPISODES[env_id]
                 res = run_generic_experiment(env_id, method, budget,
                                              GENERIC_ROLLOUT[env_id],
-                                             GENERIC_EPISODES[env_id],
+                                             episodes,
                                              GENERIC_EP_STEPS[env_id])
                 all_results[env_id][method] = res
 
