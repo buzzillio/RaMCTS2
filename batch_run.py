@@ -3,7 +3,10 @@
 # -*- coding: utf-8 -*-
 """
 batch_run.py — robust + per-environment figures
-Runs ALL envs × ALL algos with a single flag: --runs N
+
+By default runs FrozenLake 4x4 and 8x8. Additional environments can be
+enabled via command-line flags (e.g. ``--Taxi``, ``--Cliff`` or ``--all``)
+and the number of runs controlled with ``--runs``.
 """
 
 from __future__ import annotations
@@ -37,7 +40,9 @@ from tqdm import tqdm
 # ----------------------------
 # Config (tweak here if needed)
 # ----------------------------
-ENVS = ["Taxi-v3", "CliffWalking-v1", "FrozenLake-v1"]
+# Default environments: FrozenLake with 4x4 and 8x8 maps
+DEFAULT_ENVS = ["FrozenLake-v1-4x4", "FrozenLake-v1-8x8"]
+ALL_ENVS = DEFAULT_ENVS + ["Taxi-v3", "CliffWalking-v1"]
 
 # General episode/step settings
 MAX_STEPS = 100
@@ -66,7 +71,8 @@ RAMCTS_RAVE_BETA = 0.5
 ENV_TUNING = {
     "Taxi-v3":         dict(mcts_budget=100, ramcts_budget=100, rollout=50),
     "CliffWalking-v1": dict(mcts_budget=100, ramcts_budget=100, rollout=50),
-    "FrozenLake-v1":   dict(mcts_budget=100, ramcts_budget=100, rollout=50),
+    "FrozenLake-v1-4x4":   dict(mcts_budget=100, ramcts_budget=100, rollout=50),
+    "FrozenLake-v1-8x8":   dict(mcts_budget=100, ramcts_budget=100, rollout=50),
 }
 
 # Mapping for episodes per algorithm
@@ -87,6 +93,14 @@ def ensure_dir(p: Path):
 def set_global_seeds(seed: int):
     random.seed(seed)
     np.random.seed(seed)
+
+
+def make_env(env_id: str):
+    """Create Gym environment, handling FrozenLake map variants."""
+    if env_id.startswith("FrozenLake-v1-"):
+        size = env_id.rsplit("-", 1)[-1]
+        return gym.make("FrozenLake-v1", map_name=size)
+    return gym.make(env_id)
 
 
 def rolling_mean(x: List[float], w: int) -> np.ndarray:
@@ -202,7 +216,7 @@ def _infer_episode_success(env_id: str, total_reward: float, done: bool, trunc: 
 # ----------------------------
 def q_learning_run(env_id: str, seed: int, progress=None):
     set_global_seeds(seed)
-    env = gym.make(env_id)
+    env = make_env(env_id)
     obs, _ = env.reset(seed=seed)
     assert hasattr(env.observation_space, "n") and hasattr(env.action_space, "n"),         f"Q-Learning requires discrete obs/action spaces for env {env_id}"
 
@@ -470,7 +484,7 @@ def mcts_like_episode(env, plan_fn, P, budget, c, gamma, rollout_depth, rng, env
 
 def mcts_run(env_id: str, seed: int, progress=None):
     set_global_seeds(seed)
-    env = gym.make(env_id)
+    env = make_env(env_id)
     P = extract_P(env)
 
     tune = ENV_TUNING.get(env_id, {})
@@ -508,7 +522,7 @@ def mcts_run(env_id: str, seed: int, progress=None):
 
 def ramcts_run(env_id: str, seed: int, progress=None):
     set_global_seeds(seed + 1)
-    env = gym.make(env_id)
+    env = make_env(env_id)
     P = extract_P(env)
 
     tune = ENV_TUNING.get(env_id, {})
@@ -780,13 +794,26 @@ def _fallback_make_env_figures(env_id: str, env_results: Dict[str, Any], output_
 # Orchestration
 # ----------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Run ALL envs & ALL algos with only --runs.")
-    parser.add_argument("--runs", type=int, required=True, help="Number of independent runs per env & algo.")
+    parser = argparse.ArgumentParser(description="Run supported envs & algos")
+    parser.add_argument("--runs", type=int, default=1,
+                        help="Number of independent runs per env & algo (default: 1)")
+    parser.add_argument("--Taxi", action="store_true", help="Include Taxi-v3 environment")
+    parser.add_argument("--Cliff", action="store_true", help="Include CliffWalking-v1 environment")
+    parser.add_argument("--all", action="store_true", help="Run all environments")
     args = parser.parse_args()
 
     runs = int(args.runs)
     if runs <= 0:
         raise SystemExit("--runs must be a positive integer")
+
+    if args.all:
+        envs = list(ALL_ENVS)
+    else:
+        envs = list(DEFAULT_ENVS)
+        if args.Taxi:
+            envs.append("Taxi-v3")
+        if args.Cliff:
+            envs.append("CliffWalking-v1")
 
     out_root = Path("runs")
     ensure_dir(out_root)
@@ -806,12 +833,12 @@ def main():
         ("RaMCTS", ramcts_run, RAMCTS_EPISODES, RAMCTS_BUDGET),
     ]
 
-    total_tasks = len(ENVS) * len(algos) * runs
+    total_tasks = len(envs) * len(algos) * runs
     overall = tqdm(total=total_tasks, desc="All tasks", position=0)
 
     index = []
 
-    for env_id in ENVS:
+    for env_id in envs:
         env_results: Dict[str, Any] = {"runs": runs, "algorithms": {}}
 
         for algo_name, algo_fn, algo_episodes, budget in algos:
