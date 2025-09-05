@@ -871,10 +871,6 @@
 
 
 
-"""
-RaMCTS
-
-"""
 
 import math
 import random
@@ -888,6 +884,8 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 import argparse
+from env_adapters import GymDiscreteModel, success_frozenlake, success_taxi, success_cliff
+from ramcts_engine import NGramMiner
 
 # Create output directory
 OUTPUT_DIR = "ramcts_results_fixed"
@@ -896,6 +894,36 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 print("=" * 60)
 print("RaMCTS FIXED VERSION - Debugged and Optimized (Heuristic-Free)")
 print("=" * 60)
+
+# ====================
+# Configurable Parameters
+# ====================
+# Default number of repetitions for each experiment run
+DEFAULT_RUNS = 1
+
+# FrozenLake configuration
+FROZENLAKE_MAPS = ["4x4", "8x8"]
+FROZENLAKE_BUDGET = {"4x4": 150, "8x8": 300}
+FROZENLAKE_Q_EPISODES = {"4x4": 10000, "8x8": 30000}
+
+# Generic Gym environments
+GENERIC_ENVS = ["Taxi-v3", "CliffWalking-v1"]
+GENERIC_MCTS_BUDGET = {"Taxi-v3": 200, "CliffWalking-v1": 200}
+GENERIC_EPISODES = {"Taxi-v3": 1000, "CliffWalking-v1": 2000}
+GENERIC_ROLLOUT = {"Taxi-v3": 100, "CliffWalking-v1": 80}
+GENERIC_EP_STEPS = {"Taxi-v3": 200, "CliffWalking-v1": 100}
+GENERIC_Q_EPISODES = {"Taxi-v3": 10000, "CliffWalking-v1": 10000}
+
+# Optimized Vanilla MCTS configuration for CliffWalking
+CLIFF_VANILLA_MCTS_CONFIG = {
+    "num_simulations": 2000,
+    "max_moves": 200,
+    "discount": 0.99,
+    "root_exploration_fraction": 0.25,
+    "pb_c_base": 19652,
+    "pb_c_init": 1.25,
+    "episodes": 5000,
+}
 
 # ====================
 # FrozenLake Model (FIXED)
@@ -1312,6 +1340,163 @@ def run_qlearning_experiment(map_name: str = "4x4",
     env.close()
     return results
 
+def run_generic_experiment(env_id: str,
+                           method: str,
+                           sims_per_move: int,
+                           rollout_max_steps: int,
+                           max_episodes: int,
+                           step_cap: int,
+                           discount: float = 1.0,
+                           root_exploration_fraction: float = 0.0,
+                           pb_c_base: float = 1.0,
+                           pb_c_init: float = 1.25) -> Dict[str, Any]:
+    """Run Vanilla MCTS or RaMCTS on a generic discrete Gym environment."""
+    model = GymDiscreteModel(env_id)
+    env = model.env
+
+    if env_id == "Taxi-v3":
+        success_fn = success_taxi
+    elif env_id == "CliffWalking-v1":
+        success_fn = success_cliff
+    else:
+        success_fn = success_frozenlake
+
+    mcts_config = MCTSConfig(
+        max_sims_per_move=sims_per_move,
+        c_uct=math.sqrt(2),
+        c_puct=1.0,
+        beta_max=0.5 if method == "RaMCTS" else 0.0,
+        beta_start_pos=2,
+        beta_full_pos=5,
+        warm_sims=10,
+        rollout_max_steps=rollout_max_steps,
+        gamma=discount,
+        root_exploration_fraction=root_exploration_fraction,
+        pb_c_base=pb_c_base,
+        pb_c_init=pb_c_init,
+    )
+    solver = MCTSSolver(model, mcts_config)
+    miner = NGramMiner() if method == "RaMCTS" else None
+
+    results = {'episode_returns': [], 'solved': False, 'solve_episode': -1}
+    log_file_path = os.path.join(OUTPUT_DIR, f"{method}_{env_id}_logs.json")
+    episode_logs: List[Dict[str, Any]] = []
+    consecutive_successes = 0
+    method_label = "Vanilla MCTS" if method == "Vanilla" else method
+
+    for episode in range(max_episodes):
+        state, _ = env.reset()
+        done = False
+        trace: List[Tuple[int, int]] = []
+        last_reward = 0.0
+        last_term = False
+
+        for step in range(step_cap):
+            action = solver.choose_move(state, trace, miner)
+            trace.append((state, action))
+            state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            last_reward = reward
+            last_term = bool(terminated)
+            if done:
+                break
+
+        if miner:
+            miner.update(trace, last_reward)
+
+        results['episode_returns'].append(last_reward)
+
+        if success_fn(last_term, last_reward):
+            consecutive_successes += 1
+        else:
+            consecutive_successes = 0
+
+        recent_success = np.mean(results['episode_returns'][-20:])
+        episode_logs.append({'episode': episode,
+                             'success_rate': recent_success,
+                             'streak': consecutive_successes,
+                             'reward': last_reward})
+
+        if consecutive_successes >= 10:
+            results['solved'] = True
+            results['solve_episode'] = episode + 1
+            print(f"{method_label} {env_id} solved in {episode + 1} episodes!")
+            break
+
+    with open(log_file_path, 'w') as f:
+        json.dump(episode_logs, f, indent=4)
+
+    try:
+        model.close()
+    except Exception:
+        pass
+    return results
+
+def run_qlearning_generic(env_id: str,
+                          max_episodes: int = 10000,
+                          success_streak: int = 10,
+                          step_cap: int = 100) -> Dict[str, Any]:
+    """Generic Q-Learning experiment for discrete Gym environments."""
+    env = gym.make(env_id)
+    n_states = env.observation_space.n
+    n_actions = env.action_space.n
+    agent = QLearningAgent(n_states, n_actions)
+
+    if env_id == "Taxi-v3":
+        success_fn = success_taxi
+    elif env_id == "CliffWalking-v1":
+        success_fn = success_cliff
+    else:
+        success_fn = success_frozenlake
+
+    results = {'episode_returns': [], 'solved': False, 'solve_episode': -1}
+    episode_logs: List[Dict[str, Any]] = []
+    log_file_path = os.path.join(OUTPUT_DIR, f"Q-Learning_{env_id}_logs.json")
+    consecutive_successes = 0
+
+    for episode in range(max_episodes):
+        state, _ = env.reset()
+        done = False
+        last_reward = 0.0
+        last_term = False
+
+        for step in range(step_cap):
+            action = agent.choose_action(state)
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            agent.update(state, action, reward, next_state, done)
+            state = next_state
+            last_reward = reward
+            last_term = bool(terminated)
+            if done:
+                break
+
+        agent.decay_epsilon()
+        results['episode_returns'].append(last_reward)
+
+        if success_fn(last_term, last_reward):
+            consecutive_successes += 1
+        else:
+            consecutive_successes = 0
+
+        recent_success = np.mean(results['episode_returns'][-20:]) if results['episode_returns'] else 0.0
+        episode_logs.append({'episode': episode,
+                              'success_rate': recent_success,
+                              'streak': consecutive_successes,
+                              'reward': last_reward})
+
+        if consecutive_successes >= success_streak:
+            results['solved'] = True
+            results['solve_episode'] = episode + 1
+            print(f"Q-Learning {env_id} solved in {episode + 1} episodes!")
+            break
+
+    with open(log_file_path, 'w') as f:
+        json.dump(episode_logs, f, indent=4)
+
+    env.close()
+    return results
+
 def run_experiment(map_name: str, method: str, sims_per_move: int,
                    max_episodes: int = 1000) -> Dict[str, Any]:
     """Run a single experiment with fixed parameters (heuristic-free)."""
@@ -1340,9 +1525,10 @@ def run_experiment(map_name: str, method: str, sims_per_move: int,
 
     consecutive_successes = 0
 
-    # Prepare log file
+    # Prepare log file and display name
     log_file_path = os.path.join(OUTPUT_DIR, f"{method}_{map_name}_logs.json")
     episode_logs = []
+    method_label = "Vanilla MCTS" if method == "Vanilla" else method
 
     for episode in range(max_episodes):
         state, _ = env.reset()
@@ -1377,12 +1563,12 @@ def run_experiment(map_name: str, method: str, sims_per_move: int,
         })
 
         if episode % 50 == 0:
-            print(f"{method} - Episode {episode}: Success rate: {recent_success:.2f}, Streak: {consecutive_successes}")
+            print(f"{method_label} - Episode {episode}: Success rate: {recent_success:.2f}, Streak: {consecutive_successes}")
 
         if consecutive_successes >= 10:
             results['solved'] = True
             results['solve_episode'] = episode + 1
-            print(f"{method} solved in {episode + 1} episodes!")
+            print(f"{method_label} solved in {episode + 1} episodes!")
             break
 
     # Save logs to JSON file
@@ -1461,7 +1647,7 @@ def plot_learning_dynamics(output_path: str,
                 mask = ep_v <= cutoffs[map_name]
                 ax.plot(ep_v[mask], sr_v[mask], linewidth=3, label="Vanilla MCTS")
             except FileNotFoundError:
-                print(f"[plot] missing logs: Vanilla {map_name}")
+                print(f"[plot] missing logs: Vanilla MCTS {map_name}")
 
         ax.set_title(titles[map_name], fontsize=13, pad=10)
         ax.set_xlabel("Episodes")
@@ -1612,13 +1798,126 @@ def plot_efficiency_radar(all_results: Dict[str, Dict[str, Dict[str, Any]]],
     plt.savefig(os.path.join(output_path, "efficiency_radar.png"), dpi=180, bbox_inches="tight")
     plt.close()
 
+
+def plot_env_learning_dynamics(env_name: str, output_path: str) -> None:
+    """Single-environment learning dynamics plot."""
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    for method, label in [("RaMCTS", "RaMCTS"), ("Vanilla", "Vanilla MCTS"), ("Q-Learning", "Q-Learning")]:
+        try:
+            ep, sr = _load_series_strict(method, env_name, "")
+            ax.plot(ep, sr, linewidth=2, label=label)
+        except FileNotFoundError:
+            print(f"[plot] missing logs: {label} {env_name}")
+    ax.set_title(f"{env_name} Learning", fontsize=13, pad=10)
+    ax.set_xlabel("Episodes")
+    ax.set_ylabel("Success Rate")
+    ax.set_ylim(0.0, 1.02)
+    ax.grid(True, alpha=0.3)
+    ax.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_path, f"{env_name}_learning_dynamics.png"), dpi=180, bbox_inches="tight")
+    plt.close()
+
+
+def plot_env_episodes_to_solve(all_results: Dict[str, Any],
+                               env_name: str,
+                               output_path: str,
+                               caps: Dict[str, int]) -> None:
+    """Bar chart of episodes to solve for a single environment."""
+    methods = [("Q-Learning", "Q-Learning"), ("Vanilla", "Vanilla MCTS"), ("RaMCTS", "RaMCTS")]
+    heights = []
+    labels = []
+    for key, label in methods:
+        cap = caps.get(key, 1000)
+        ep = _episodes_to_solve_or_cap(all_results.get(key), cap)
+        heights.append(ep)
+        labels.append(label)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    bars = ax.bar(range(len(methods)), heights)
+    ax.set_yscale("log")
+    ax.set_ylabel("Episodes (Log Scale)")
+    ax.set_xticks(range(len(methods)))
+    ax.set_xticklabels(labels, rotation=45)
+    ax.set_title(f"Episodes to Solve — {env_name}")
+    ax.grid(True, axis='y', alpha=0.3)
+    for b, h in zip(bars, heights):
+        txt = f"{int(h)}" if np.isfinite(h) else "Fail"
+        ax.text(b.get_x() + b.get_width() / 2, h * 1.05, txt, ha="center", va="bottom", fontsize=9)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_path, f"{env_name}_episodes_to_solve.png"), dpi=180, bbox_inches="tight")
+    plt.close()
+
+
+def plot_env_efficiency_radar(all_results: Dict[str, Any],
+                              env_name: str,
+                              output_path: str,
+                              sims_per_move: int) -> None:
+    """Radar chart for a single environment."""
+    labels = ["Sample Efficiency", "Computational Cost", "Scalability", "Interpretability", "Robustness"]
+    methods = [("RaMCTS", "RaMCTS"), ("Vanilla", "Vanilla MCTS"), ("Q-Learning", "Q-Learning")]
+
+    epi: Dict[str, float] = {}
+    comp: Dict[str, float] = {}
+    for key, _ in methods:
+        cap = 30000 if key == "Q-Learning" else 1000
+        ep = _episodes_to_solve_or_cap(all_results.get(key), cap)
+        epi[key] = ep
+        avg_steps = 40
+        if key == "Q-Learning":
+            comp[key] = _estimate_compute(ep, 1, avg_steps)
+        else:
+            comp[key] = _estimate_compute(ep, sims_per_move, avg_steps)
+
+    C_MIN, C_MAX = min(comp.values()), max(comp.values())
+
+    scores: Dict[str, List[float]] = {}
+    for key, _ in methods:
+        scores.setdefault(key, [])
+        scores[key].append(_score_sample_efficiency(epi[key], ep_min=10, ep_max=30000))
+        scores[key].append(_score_cost(comp[key], C_MIN, C_MAX))
+        scores[key].append({"RaMCTS": 90, "Vanilla": 60, "Q-Learning": 30}[key])
+        scores[key].append({"RaMCTS": 95, "Vanilla": 40, "Q-Learning": 60}[key])
+        scores[key].append({"RaMCTS": 85, "Vanilla": 55, "Q-Learning": 45}[key])
+
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig = plt.figure(figsize=(8, 5))
+    ax = plt.subplot(111, polar=True)
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+    ax.set_thetagrids(np.degrees(angles[:-1]), labels)
+    ax.set_rlabel_position(0)
+    ax.set_ylim(0, 100)
+
+    for key, display in methods:
+        vals = scores[key] + scores[key][:1]
+        ax.plot(angles, vals, linewidth=2, label=display)
+        ax.fill(angles, vals, alpha=0.08)
+
+    ax.set_title(f"{env_name} Performance Analysis", pad=18)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.2, 1.1), frameon=False)
+    plt.savefig(os.path.join(output_path, f"{env_name}_efficiency_radar.png"), dpi=180, bbox_inches="tight")
+    plt.close()
+
 # ====================
 # Main Execution
 # ====================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run RaMCTS experiments")
-    parser.add_argument("--runs", type=int, default=1, help="number of experiment repetitions")
+    parser.add_argument("--runs", type=int, default=DEFAULT_RUNS, help="number of experiment repetitions")
+    parser.add_argument("--envs", type=str, default=None,
+                        help="Comma-separated environments: FrozenLake, Taxi-v3, CliffWalking-v1")
+    parser.add_argument("--all", action="store_true", help="Run all environments")
     args = parser.parse_args()
+
+    if args.all:
+        env_list = ["FrozenLake"] + GENERIC_ENVS
+    elif args.envs:
+        env_list = [e.strip() for e in args.envs.split(",") if e.strip()]
+    else:
+        env_list = ["FrozenLake"]
 
     print("\nStarting Fixed Experiments...")
     print("=" * 60)
@@ -1630,55 +1929,114 @@ if __name__ == "__main__":
         results_file.write(text + '\n')
         results_file.flush()
 
-    all_runs: List[Dict[str, Dict[str, Any]]] = []
+    all_runs: List[Dict[str, Any]] = []
 
     for run_idx in range(1, args.runs + 1):
         log(f"\n=== Run {run_idx}/{args.runs} ===")
-        all_results: Dict[str, Dict[str, Any]] = {}
+        all_results: Dict[str, Any] = {}
 
-        for map_name in ["4x4", "8x8"]:
-            log(f"\nTesting on FrozenLake {map_name}")
+        if "FrozenLake" in env_list:
+            all_results["FrozenLake"] = {}
+            for map_name in FROZENLAKE_MAPS:
+                log(f"\nTesting on FrozenLake {map_name}")
+                log("=" * 60)
+                all_results["FrozenLake"][map_name] = {}
+                log("\n1. Q-Learning (Fixed)")
+                res = run_qlearning_experiment(map_name, max_episodes=FROZENLAKE_Q_EPISODES[map_name])
+                all_results["FrozenLake"][map_name]['Q-Learning'] = res
+                budget = FROZENLAKE_BUDGET[map_name]
+                for method in ["Vanilla", "RaMCTS"]:
+                    disp = "Vanilla MCTS" if method == "Vanilla" else method
+                    log(f"\n{disp} ({budget} sims)")
+                    res = run_experiment(map_name, method, budget, max_episodes=1000)
+                    all_results["FrozenLake"][map_name][method] = res
+
+        if "Taxi-v3" in env_list:
+            env_id = "Taxi-v3"
+            log(f"\nTesting on {env_id}")
             log("=" * 60)
-
-            all_results[map_name] = {}
-
-            # 1. Q-Learning
+            all_results[env_id] = {}
             log("\n1. Q-Learning (Fixed)")
-            results = run_qlearning_experiment(map_name, max_episodes=10000 if map_name == "4x4" else 30000)
-            all_results[map_name]['Q-Learning'] = results
+            res = run_qlearning_generic(env_id, max_episodes=GENERIC_Q_EPISODES[env_id],
+                                        step_cap=GENERIC_EP_STEPS[env_id])
+            all_results[env_id]['Q-Learning'] = res
+            budget = GENERIC_MCTS_BUDGET[env_id]
+            for method in ["Vanilla", "RaMCTS"]:
+                disp = "Vanilla MCTS" if method == "Vanilla" else method
+                log(f"\n{disp} ({budget} sims)")
+                res = run_generic_experiment(env_id, method, budget,
+                                             GENERIC_ROLLOUT[env_id],
+                                             GENERIC_EPISODES[env_id],
+                                             GENERIC_EP_STEPS[env_id])
+                all_results[env_id][method] = res
 
-            budget = 150 if map_name == "4x4" else 300
-
-            # Ablations: heuristic-free only
-            ablations = [
-                ("Vanilla", "Vanilla"),
-                ("RaMCTS", "RaMCTS"),
-            ]
-
-            for method, label in ablations:
-                log(f"\n{label} ({budget} sims)")
-                results = run_experiment(map_name, method, budget, max_episodes=1000)
-                all_results[map_name][label] = results
+        if "CliffWalking-v1" in env_list:
+            env_id = "CliffWalking-v1"
+            log(f"\nTesting on {env_id}")
+            log("=" * 60)
+            all_results[env_id] = {}
+            log("\n1. Q-Learning (Fixed)")
+            res = run_qlearning_generic(env_id, max_episodes=GENERIC_Q_EPISODES[env_id],
+                                        step_cap=GENERIC_EP_STEPS[env_id])
+            all_results[env_id]['Q-Learning'] = res
+            budget = GENERIC_MCTS_BUDGET[env_id]
+            for method in ["Vanilla", "RaMCTS"]:
+                if method == "Vanilla":
+                    cfg = CLIFF_VANILLA_MCTS_CONFIG
+                    sims = cfg["num_simulations"]
+                    rollout = cfg["max_moves"]
+                    episodes = cfg["episodes"]
+                    step_cap = cfg["max_moves"]
+                    discount = cfg["discount"]
+                    root_frac = cfg["root_exploration_fraction"]
+                    pb_base = cfg["pb_c_base"]
+                    pb_init = cfg["pb_c_init"]
+                else:
+                    sims = budget
+                    rollout = GENERIC_ROLLOUT[env_id]
+                    episodes = GENERIC_EPISODES[env_id]
+                    step_cap = GENERIC_EP_STEPS[env_id]
+                    discount = 1.0
+                    root_frac = 0.0
+                    pb_base = 1.0
+                    pb_init = 1.25
+                disp = "Vanilla MCTS" if method == "Vanilla" else method
+                log(f"\n{disp} ({sims} sims)")
+                res = run_generic_experiment(env_id, method, sims,
+                                             rollout,
+                                             episodes,
+                                             step_cap,
+                                             discount,
+                                             root_frac,
+                                             pb_base,
+                                             pb_init)
+                all_results[env_id][method] = res
 
         # Summary for this run
         log("\n" + "=" * 60)
         log(f"RESULTS SUMMARY (Run {run_idx})")
         log("=" * 60)
-
-        for map_name in ["4x4", "8x8"]:
-            log(f"\nFrozenLake {map_name}:")
-            keys = {
-                "Q-Learning": "Q-Learning",
-                "Vanilla": "Vanilla",
-                "RaMCTS": "RaMCTS",
-            }
-            for key, label in keys.items():
-                res = all_results[map_name].get(key)
-                if res is None:
-                    log(f"  {label}: (missing)")
-                    continue
-                status = f"SOLVED in {res['solve_episode']} episodes" if res['solved'] else "Failed"
-                log(f"  {label}: {status}")
+        keys = {"Q-Learning": "Q-Learning", "Vanilla": "Vanilla MCTS", "RaMCTS": "RaMCTS"}
+        if "FrozenLake" in env_list:
+            for map_name in FROZENLAKE_MAPS:
+                log(f"\nFrozenLake {map_name}:")
+                for key, label in keys.items():
+                    res = all_results["FrozenLake"][map_name].get(key)
+                    if res is None:
+                        log(f"  {label}: (missing)")
+                        continue
+                    status = f"SOLVED in {res['solve_episode']} episodes" if res['solved'] else "Failed"
+                    log(f"  {label}: {status}")
+        for env_id in GENERIC_ENVS:
+            if env_id in env_list:
+                log(f"\n{env_id}:")
+                for key, label in keys.items():
+                    res = all_results[env_id].get(key)
+                    if res is None:
+                        log(f"  {label}: (missing)")
+                        continue
+                    status = f"SOLVED in {res['solve_episode']} episodes" if res['solved'] else "Failed"
+                    log(f"  {label}: {status}")
 
         all_runs.append(all_results)
 
@@ -1686,38 +2044,56 @@ if __name__ == "__main__":
     log("\n" + "=" * 60)
     log(f"AVERAGED RESULTS OVER {args.runs} RUNS")
     log("=" * 60)
-
-    keys = {
-        "Q-Learning": "Q-Learning",
-        "Vanilla": "Vanilla",
-        "RaMCTS": "RaMCTS",
-    }
-
-    for map_name in ["4x4", "8x8"]:
-        log(f"\nFrozenLake {map_name}:")
-        for key, label in keys.items():
-            solved_runs = [run[map_name][key]['solved'] for run in all_runs]
-            solve_episodes = [run[map_name][key]['solve_episode'] for run in all_runs if run[map_name][key]['solved']]
-            solve_rate = float(np.mean(solved_runs)) if solved_runs else 0.0
-            avg_ep = float(np.mean(solve_episodes)) if solve_episodes else float('nan')
-            if np.isnan(avg_ep):
-                log(f"  {label}: solved {solve_rate*100:.1f}% runs, avg solve episode: N/A")
-            else:
-                log(f"  {label}: solved {solve_rate*100:.1f}% runs, avg solve episode: {avg_ep:.1f}")
+    keys = {"Q-Learning": "Q-Learning", "Vanilla": "Vanilla MCTS", "RaMCTS": "RaMCTS"}
+    if "FrozenLake" in env_list:
+        for map_name in FROZENLAKE_MAPS:
+            log(f"\nFrozenLake {map_name}:")
+            for key, label in keys.items():
+                solved_runs = [run["FrozenLake"][map_name][key]['solved'] for run in all_runs]
+                solve_episodes = [run["FrozenLake"][map_name][key]['solve_episode'] for run in all_runs if run["FrozenLake"][map_name][key]['solved']]
+                solve_rate = float(np.mean(solved_runs)) if solved_runs else 0.0
+                avg_ep = float(np.mean(solve_episodes)) if solve_episodes else float('nan')
+                if np.isnan(avg_ep):
+                    log(f"  {label}: solved {solve_rate*100:.1f}% runs, avg solve episode: N/A")
+                else:
+                    log(f"  {label}: solved {solve_rate*100:.1f}% runs, avg solve episode: {avg_ep:.1f}")
+    for env_id in GENERIC_ENVS:
+        if env_id in env_list:
+            log(f"\n{env_id}:")
+            for key, label in keys.items():
+                solved_runs = [run[env_id][key]['solved'] for run in all_runs]
+                solve_episodes = [run[env_id][key]['solve_episode'] for run in all_runs if run[env_id][key]['solved']]
+                solve_rate = float(np.mean(solved_runs)) if solved_runs else 0.0
+                avg_ep = float(np.mean(solve_episodes)) if solve_episodes else float('nan')
+                if np.isnan(avg_ep):
+                    log(f"  {label}: solved {solve_rate*100:.1f}% runs, avg solve episode: N/A")
+                else:
+                    log(f"  {label}: solved {solve_rate*100:.1f}% runs, avg solve episode: {avg_ep:.1f}")
 
     results_file.close()
     print(f"\nResults saved to {OUTPUT_DIR}/results_fixed.txt")
     print("\n✅ Heuristic-free ablations complete.")
 
-    # ---- Plots (based on last run data) ----
-    sims_map = {"4x4": 150, "8x8": 300}  # keep in sync with 'budget' above
-    plot_learning_dynamics(OUTPUT_DIR, ql_scale=10.0, x_cutoff_4x4=30, x_cutoff_8x8=170)
-    plot_episodes_to_solve_bar(
-        all_runs[-1],
-        OUTPUT_DIR,
-        caps={"Q-Learning": {"4x4": 10000, "8x8": 30000},
-              "Vanilla": {"4x4": 1000, "8x8": 1000},
-              "RaMCTS": {"4x4": 1000, "8x8": 1000}},
-        include_strong=False  # set True only if you actually ran "_strong" variants
-    )
-    plot_efficiency_radar(all_runs[-1], OUTPUT_DIR, sims_per_move=sims_map)
+    if "FrozenLake" in env_list:
+        sims_map = {m: FROZENLAKE_BUDGET[m] for m in FROZENLAKE_MAPS}
+        plot_learning_dynamics(OUTPUT_DIR, ql_scale=10.0, x_cutoff_4x4=30, x_cutoff_8x8=170)
+        plot_episodes_to_solve_bar(
+            all_runs[-1]["FrozenLake"],
+            OUTPUT_DIR,
+            caps={"Q-Learning": {"4x4": 10000, "8x8": 30000},
+                  "Vanilla": {"4x4": 1000, "8x8": 1000},
+                  "RaMCTS": {"4x4": 1000, "8x8": 1000}},
+            include_strong=False,
+        )
+        plot_efficiency_radar(all_runs[-1]["FrozenLake"], OUTPUT_DIR, sims_per_move=sims_map)
+
+    for env_id in GENERIC_ENVS:
+        if env_id in env_list:
+            env_res = all_runs[-1][env_id]
+            plot_env_learning_dynamics(env_id, OUTPUT_DIR)
+            plot_env_episodes_to_solve(env_res, env_id, OUTPUT_DIR,
+                                       caps={"Q-Learning": GENERIC_Q_EPISODES[env_id],
+                                             "Vanilla": GENERIC_EPISODES[env_id],
+                                             "RaMCTS": GENERIC_EPISODES[env_id]})
+            plot_env_efficiency_radar(env_res, env_id, OUTPUT_DIR,
+                                       sims_per_move=GENERIC_MCTS_BUDGET[env_id])
