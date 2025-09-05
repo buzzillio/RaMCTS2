@@ -1471,7 +1471,6 @@ def run_generic_experiment(env_id: str,
             results['solve_episode'] = episode + 1
 
             print(f"{method_label} {env_id} solved in {episode + 1} episodes!")
- main
             break
 
     with open(log_file_path, 'w') as f:
@@ -1860,7 +1859,6 @@ def plot_env_learning_dynamics(env_name: str, output_path: str) -> None:
         except FileNotFoundError:
 
             print(f"[plot] missing logs: {label} {env_name}")
-main
     ax.set_title(f"{env_name} Learning", fontsize=13, pad=10)
     ax.set_xlabel("Episodes")
     ax.set_ylabel("Success Rate")
@@ -1886,7 +1884,6 @@ def plot_env_episodes_to_solve(all_results: Dict[str, Any],
         ep = _episodes_to_solve_or_cap(all_results.get(key), cap)
         heights.append(ep)
         labels.append(label)
- main
 
     fig, ax = plt.subplots(figsize=(6, 5))
     bars = ax.bar(range(len(methods)), heights)
@@ -1895,7 +1892,6 @@ def plot_env_episodes_to_solve(all_results: Dict[str, Any],
     ax.set_xticks(range(len(methods)))
 
     ax.set_xticklabels(labels, rotation=45)
- main
     ax.set_title(f"Episodes to Solve — {env_name}")
     ax.grid(True, axis='y', alpha=0.3)
     for b, h in zip(bars, heights):
@@ -2006,7 +2002,6 @@ if __name__ == "__main__":
 
                     disp = "Vanilla MCTS" if method == "Vanilla" else method
                     log(f"\n{disp} ({budget} sims)")
- main
                     res = run_experiment(map_name, method, budget, max_episodes=1000)
                     all_results["FrozenLake"][map_name][method] = res
 
@@ -2024,7 +2019,6 @@ if __name__ == "__main__":
 
                 disp = "Vanilla MCTS" if method == "Vanilla" else method
                 log(f"\n{disp} ({budget} sims)")
-main
                 res = run_generic_experiment(env_id, method, budget,
                                              GENERIC_ROLLOUT[env_id],
                                              GENERIC_EPISODES[env_id],
@@ -2072,7 +2066,6 @@ main
                                              root_frac,
                                              pb_base,
                                              pb_init)
- main
                 all_results[env_id][method] = res
 
         # Summary for this run
@@ -2081,7 +2074,6 @@ main
         log("=" * 60)
 
         keys = {"Q-Learning": "Q-Learning", "Vanilla": "Vanilla MCTS", "RaMCTS": "RaMCTS"}
-main
         if "FrozenLake" in env_list:
             for map_name in FROZENLAKE_MAPS:
                 log(f"\nFrozenLake {map_name}:")
@@ -2111,7 +2103,6 @@ main
     log("=" * 60)
 
     keys = {"Q-Learning": "Q-Learning", "Vanilla": "Vanilla MCTS", "RaMCTS": "RaMCTS"}
-> main
     if "FrozenLake" in env_list:
         for map_name in FROZENLAKE_MAPS:
             log(f"\nFrozenLake {map_name}:")
