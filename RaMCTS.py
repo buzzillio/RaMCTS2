@@ -1416,7 +1416,7 @@ def run_generic_experiment(env_id: str,
         warm_sims=10,
         rollout_max_steps=rollout_max_steps,
 
-        gamma=discount,
+        discount=discount,
         root_exploration_fraction=root_exploration_fraction,
         pb_c_base=pb_c_base,
         pb_c_init=pb_c_init,
@@ -1890,7 +1890,6 @@ def plot_env_episodes_to_solve(all_results: Dict[str, Any],
     ax.set_yscale("log")
     ax.set_ylabel("Episodes (Log Scale)")
     ax.set_xticks(range(len(methods)))
-
     ax.set_xticklabels(labels, rotation=45)
     ax.set_title(f"Episodes to Solve — {env_name}")
     ax.grid(True, axis='y', alpha=0.3)
@@ -1999,7 +1998,6 @@ if __name__ == "__main__":
                 all_results["FrozenLake"][map_name]['Q-Learning'] = res
                 budget = FROZENLAKE_BUDGET[map_name]
                 for method in ["Vanilla", "RaMCTS"]:
-
                     disp = "Vanilla MCTS" if method == "Vanilla" else method
                     log(f"\n{disp} ({budget} sims)")
                     res = run_experiment(map_name, method, budget, max_episodes=1000)
@@ -2072,7 +2070,6 @@ if __name__ == "__main__":
         log("\n" + "=" * 60)
         log(f"RESULTS SUMMARY (Run {run_idx})")
         log("=" * 60)
-
         keys = {"Q-Learning": "Q-Learning", "Vanilla": "Vanilla MCTS", "RaMCTS": "RaMCTS"}
         if "FrozenLake" in env_list:
             for map_name in FROZENLAKE_MAPS:
