@@ -1,0 +1,9 @@
+
+=== Run 1/1 ===
+
+Testing on CliffWalking-v1
+============================================================
+
+1. Q-Learning (Fixed)
+
+Vanilla (2000 sims)

@@ -1,0 +1,98 @@
+[
+    {
+        "episode": 0,
+        "success_rate": -1.0,
+        "streak": 0,
+        "reward": -1
+    },
+    {
+        "episode": 1,
+        "success_rate": 9.5,
+        "streak": 1,
+        "reward": 20
+    },
+    {
+        "episode": 2,
+        "success_rate": 13.0,
+        "streak": 2,
+        "reward": 20
+    },
+    {
+        "episode": 3,
+        "success_rate": 9.5,
+        "streak": 0,
+        "reward": -1
+    },
+    {
+        "episode": 4,
+        "success_rate": 11.6,
+        "streak": 1,
+        "reward": 20
+    },
+    {
+        "episode": 5,
+        "success_rate": 8.0,
+        "streak": 0,
+        "reward": -10
+    },
+    {
+        "episode": 6,
+        "success_rate": 9.714285714285714,
+        "streak": 1,
+        "reward": 20
+    },
+    {
+        "episode": 7,
+        "success_rate": 11.0,
+        "streak": 2,
+        "reward": 20
+    },
+    {
+        "episode": 8,
+        "success_rate": 12.0,
+        "streak": 3,
+        "reward": 20
+    },
+    {
+        "episode": 9,
+        "success_rate": 12.8,
+        "streak": 4,
+        "reward": 20
+    },
+    {
+        "episode": 10,
+        "success_rate": 13.454545454545455,
+        "streak": 5,
+        "reward": 20
+    },
+    {
+        "episode": 11,
+        "success_rate": 14.0,
+        "streak": 6,
+        "reward": 20
+    },
+    {
+        "episode": 12,
+        "success_rate": 14.461538461538462,
+        "streak": 7,
+        "reward": 20
+    },
+    {
+        "episode": 13,
+        "success_rate": 14.857142857142858,
+        "streak": 8,
+        "reward": 20
+    },
+    {
+        "episode": 14,
+        "success_rate": 15.2,
+        "streak": 9,
+        "reward": 20
+    },
+    {
+        "episode": 15,
+        "success_rate": 15.5,
+        "streak": 10,
+        "reward": 20
+    }
+]

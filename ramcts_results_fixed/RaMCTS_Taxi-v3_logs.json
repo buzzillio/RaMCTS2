@@ -1,0 +1,62 @@
+[
+    {
+        "episode": 0,
+        "success_rate": 20.0,
+        "streak": 1,
+        "reward": 20
+    },
+    {
+        "episode": 1,
+        "success_rate": 20.0,
+        "streak": 2,
+        "reward": 20
+    },
+    {
+        "episode": 2,
+        "success_rate": 20.0,
+        "streak": 3,
+        "reward": 20
+    },
+    {
+        "episode": 3,
+        "success_rate": 20.0,
+        "streak": 4,
+        "reward": 20
+    },
+    {
+        "episode": 4,
+        "success_rate": 20.0,
+        "streak": 5,
+        "reward": 20
+    },
+    {
+        "episode": 5,
+        "success_rate": 20.0,
+        "streak": 6,
+        "reward": 20
+    },
+    {
+        "episode": 6,
+        "success_rate": 20.0,
+        "streak": 7,
+        "reward": 20
+    },
+    {
+        "episode": 7,
+        "success_rate": 20.0,
+        "streak": 8,
+        "reward": 20
+    },
+    {
+        "episode": 8,
+        "success_rate": 20.0,
+        "streak": 9,
+        "reward": 20
+    },
+    {
+        "episode": 9,
+        "success_rate": 20.0,
+        "streak": 10,
+        "reward": 20
+    }
+]
