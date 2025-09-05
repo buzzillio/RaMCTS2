@@ -909,6 +909,7 @@ FROZENLAKE_Q_EPISODES = {"4x4": 10000, "8x8": 30000}
 # Generic Gym environments
 GENERIC_ENVS = ["Taxi-v3", "CliffWalking-v1"]
 GENERIC_MCTS_BUDGET = {"Taxi-v3": 200, "CliffWalking-v1": 200}
+
 GENERIC_EPISODES = {"Taxi-v3": 1000, "CliffWalking-v1": 2000}
 GENERIC_ROLLOUT = {"Taxi-v3": 100, "CliffWalking-v1": 80}
 GENERIC_EP_STEPS = {"Taxi-v3": 200, "CliffWalking-v1": 100}
@@ -924,6 +925,7 @@ CLIFF_VANILLA_MCTS_CONFIG = {
     "pb_c_init": 1.25,
     "episodes": 5000,
 }
+
 
 # ====================
 # FrozenLake Model (FIXED)
@@ -1116,6 +1118,12 @@ class MCTSConfig:
     mini_duel: bool = False
     duel_extra_sims: int = 0
     rollout_max_steps: int = 50
+    # Additional options to support CliffWalking vanilla tuning
+    discount: float = 1.0  # 0.99 for CliffWalking vanilla
+    root_exploration_fraction: float = 0.0  # 0.25 for CliffWalking vanilla
+    pb_c_base: float = 0.0  # 19652 for CliffWalking vanilla (MuZero-style)
+    pb_c_init: float = 0.0  # 1.25 for CliffWalking vanilla
+    full_episode_rollout: bool = False  # True for CliffWalking vanilla
 
 class MCTSSolver:
     """Fixed MCTS solver (heuristic-free)."""
@@ -1139,13 +1147,25 @@ class MCTSSolver:
             return self.config.beta_max * progress
             
     def _simulate_rollout(self, state: int) -> float:
-        """Heuristic-free random rollout."""
-        for _ in range(self.config.rollout_max_steps):
-            action = random.randrange(self.action_count)
-            state, reward, done = self.model.step(state, action)
-            if done:
-                return reward
-        return 0.0
+        """Random rollout. Optionally accumulate discounted return until terminal/cap."""
+        if self.config.full_episode_rollout:
+            total = 0.0
+            g = 1.0
+            for _ in range(self.config.rollout_max_steps):
+                action = random.randrange(self.action_count)
+                state, reward, done = self.model.step(state, action)
+                total += g * reward
+                g *= self.config.discount if self.config.discount > 0 else 1.0
+                if done:
+                    break
+            return total
+        else:
+            for _ in range(self.config.rollout_max_steps):
+                action = random.randrange(self.action_count)
+                state, reward, done = self.model.step(state, action)
+                if done:
+                    return reward
+            return 0.0
     
     def _select_action(self, node: Node, miner: Optional[RaCTSMiner], 
                        beta: float, history: List[Tuple[int, int]], 
@@ -1155,7 +1175,10 @@ class MCTSSolver:
             # No children yet; pick a random action (no heuristic fallback)
             return random.randrange(self.action_count)
 
+        # Use miner-driven PUCT if miner available and warmed up
         use_puct = (miner and beta > 0 and sim_count >= self.config.warm_sims and node.N >= 10)
+        # Use MuZero-style PUCT even without miner if pb_c_base/init configured (>0)
+        use_vanilla_puct = (not miner) and (self.config.pb_c_base > 0 and self.config.pb_c_init > 0) and (node.N >= 1)
 
         if use_puct:
             # PUCT selection (using priors from the miner)
@@ -1176,6 +1199,23 @@ class MCTSSolver:
                 prior = priors.get(action, 1.0 / self.action_count)
                 exploration = self.config.c_puct * beta * prior * sqrt_n / (1 + child.N)
                 value = q + exploration
+                if value > best_value:
+                    best_value = value
+                    best_action = action
+            return best_action
+        elif use_vanilla_puct:
+            # MuZero-style PUCT with uniform priors (no miner)
+            best_action = None
+            best_value = -float('inf')
+            sqrt_n = math.sqrt(max(1, node.N))
+            # Uniform priors over available children
+            prior = 1.0 / max(1, len(node.children))
+            # Compute pb_c term once per node visit count
+            pb_c = math.log((node.N + self.config.pb_c_base + 1) / self.config.pb_c_base) + self.config.pb_c_init
+            for action, child in node.children.items():
+                q = child.q_value()
+                u = pb_c * prior * sqrt_n / (1 + child.N)
+                value = q + u
                 if value > best_value:
                     best_value = value
                     best_action = action
@@ -1241,6 +1281,9 @@ class MCTSSolver:
             self._backup(path, reward)
         if not root.children:
             return random.randrange(self.action_count)
+        # Optional root-level exploration for CliffWalking vanilla
+        if self.config.root_exploration_fraction > 0.0 and random.random() < self.config.root_exploration_fraction:
+            return random.choice(list(root.children.keys()))
         return max(root.children, key=lambda a: root.children[a].N)
 
 # ====================
@@ -1345,11 +1388,13 @@ def run_generic_experiment(env_id: str,
                            sims_per_move: int,
                            rollout_max_steps: int,
                            max_episodes: int,
+
                            step_cap: int,
                            discount: float = 1.0,
                            root_exploration_fraction: float = 0.0,
                            pb_c_base: float = 1.0,
                            pb_c_init: float = 1.25) -> Dict[str, Any]:
+
     """Run Vanilla MCTS or RaMCTS on a generic discrete Gym environment."""
     model = GymDiscreteModel(env_id)
     env = model.env
@@ -1370,11 +1415,13 @@ def run_generic_experiment(env_id: str,
         beta_full_pos=5,
         warm_sims=10,
         rollout_max_steps=rollout_max_steps,
+
         gamma=discount,
         root_exploration_fraction=root_exploration_fraction,
         pb_c_base=pb_c_base,
         pb_c_init=pb_c_init,
     )
+
     solver = MCTSSolver(model, mcts_config)
     miner = NGramMiner() if method == "RaMCTS" else None
 
@@ -1382,7 +1429,9 @@ def run_generic_experiment(env_id: str,
     log_file_path = os.path.join(OUTPUT_DIR, f"{method}_{env_id}_logs.json")
     episode_logs: List[Dict[str, Any]] = []
     consecutive_successes = 0
+
     method_label = "Vanilla MCTS" if method == "Vanilla" else method
+
 
     for episode in range(max_episodes):
         state, _ = env.reset()
@@ -1420,7 +1469,9 @@ def run_generic_experiment(env_id: str,
         if consecutive_successes >= 10:
             results['solved'] = True
             results['solve_episode'] = episode + 1
+
             print(f"{method_label} {env_id} solved in {episode + 1} episodes!")
+ main
             break
 
     with open(log_file_path, 'w') as f:
@@ -1807,7 +1858,9 @@ def plot_env_learning_dynamics(env_name: str, output_path: str) -> None:
             ep, sr = _load_series_strict(method, env_name, "")
             ax.plot(ep, sr, linewidth=2, label=label)
         except FileNotFoundError:
+
             print(f"[plot] missing logs: {label} {env_name}")
+main
     ax.set_title(f"{env_name} Learning", fontsize=13, pad=10)
     ax.set_xlabel("Episodes")
     ax.set_ylabel("Success Rate")
@@ -1824,6 +1877,7 @@ def plot_env_episodes_to_solve(all_results: Dict[str, Any],
                                output_path: str,
                                caps: Dict[str, int]) -> None:
     """Bar chart of episodes to solve for a single environment."""
+
     methods = [("Q-Learning", "Q-Learning"), ("Vanilla", "Vanilla MCTS"), ("RaMCTS", "RaMCTS")]
     heights = []
     labels = []
@@ -1832,13 +1886,16 @@ def plot_env_episodes_to_solve(all_results: Dict[str, Any],
         ep = _episodes_to_solve_or_cap(all_results.get(key), cap)
         heights.append(ep)
         labels.append(label)
+ main
 
     fig, ax = plt.subplots(figsize=(6, 5))
     bars = ax.bar(range(len(methods)), heights)
     ax.set_yscale("log")
     ax.set_ylabel("Episodes (Log Scale)")
     ax.set_xticks(range(len(methods)))
+
     ax.set_xticklabels(labels, rotation=45)
+ main
     ax.set_title(f"Episodes to Solve — {env_name}")
     ax.grid(True, axis='y', alpha=0.3)
     for b, h in zip(bars, heights):
@@ -1946,8 +2003,10 @@ if __name__ == "__main__":
                 all_results["FrozenLake"][map_name]['Q-Learning'] = res
                 budget = FROZENLAKE_BUDGET[map_name]
                 for method in ["Vanilla", "RaMCTS"]:
+
                     disp = "Vanilla MCTS" if method == "Vanilla" else method
                     log(f"\n{disp} ({budget} sims)")
+ main
                     res = run_experiment(map_name, method, budget, max_episodes=1000)
                     all_results["FrozenLake"][map_name][method] = res
 
@@ -1962,8 +2021,10 @@ if __name__ == "__main__":
             all_results[env_id]['Q-Learning'] = res
             budget = GENERIC_MCTS_BUDGET[env_id]
             for method in ["Vanilla", "RaMCTS"]:
+
                 disp = "Vanilla MCTS" if method == "Vanilla" else method
                 log(f"\n{disp} ({budget} sims)")
+main
                 res = run_generic_experiment(env_id, method, budget,
                                              GENERIC_ROLLOUT[env_id],
                                              GENERIC_EPISODES[env_id],
@@ -1981,6 +2042,7 @@ if __name__ == "__main__":
             all_results[env_id]['Q-Learning'] = res
             budget = GENERIC_MCTS_BUDGET[env_id]
             for method in ["Vanilla", "RaMCTS"]:
+
                 if method == "Vanilla":
                     cfg = CLIFF_VANILLA_MCTS_CONFIG
                     sims = cfg["num_simulations"]
@@ -2010,13 +2072,16 @@ if __name__ == "__main__":
                                              root_frac,
                                              pb_base,
                                              pb_init)
+ main
                 all_results[env_id][method] = res
 
         # Summary for this run
         log("\n" + "=" * 60)
         log(f"RESULTS SUMMARY (Run {run_idx})")
         log("=" * 60)
+
         keys = {"Q-Learning": "Q-Learning", "Vanilla": "Vanilla MCTS", "RaMCTS": "RaMCTS"}
+main
         if "FrozenLake" in env_list:
             for map_name in FROZENLAKE_MAPS:
                 log(f"\nFrozenLake {map_name}:")
@@ -2044,7 +2109,9 @@ if __name__ == "__main__":
     log("\n" + "=" * 60)
     log(f"AVERAGED RESULTS OVER {args.runs} RUNS")
     log("=" * 60)
+
     keys = {"Q-Learning": "Q-Learning", "Vanilla": "Vanilla MCTS", "RaMCTS": "RaMCTS"}
+> main
     if "FrozenLake" in env_list:
         for map_name in FROZENLAKE_MAPS:
             log(f"\nFrozenLake {map_name}:")
